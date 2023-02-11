@@ -3,6 +3,7 @@ module github.com/sandrolain/go-pokerface/src
 go 1.20
 
 require (
+	github.com/d5/tengo/v2 v2.13.0
 	github.com/gofiber/fiber/v2 v2.42.0
 	github.com/valyala/fasthttp v1.44.0
 )

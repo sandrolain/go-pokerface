@@ -1,0 +1,23 @@
+{
+  "forwards": [
+    {
+      "method": "GET",
+      "path": "/one",
+      "rewrite": {
+				"/one": "/"
+			},
+			"destination": "http://localhost:4444",
+			"headers": {
+				"X-Pokerface":   "yes",
+				"Authorization": "{cookies.auth}"
+			},
+			"query": {
+				"Pippo": "pluto"
+			}
+		},
+		{
+			"path":        "/two",
+			"destination": "http://localhost:5555"
+		}
+  ]
+}

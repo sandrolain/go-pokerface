@@ -2,38 +2,65 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/proxy"
-	"github.com/sandrolain/go-pokerface/src/pokerface/forward"
+	"github.com/sandrolain/go-pokerface/src/cert"
 	"github.com/valyala/fasthttp"
 )
 
+type Config struct {
+	Forwards []Forward `json:"forwards"`
+}
+
+type Rewrite map[string]string
+type Params map[string]string
+
+type Forward struct {
+	Method      string  `json:"method,omitempty"`
+	Path        string  `json:"path"`
+	Rewrite     Rewrite `json:"rewrite,omitempty"`
+	Destination string  `json:"destination"`
+	Query       Params  `json:"query,omitempty"`
+	Headers     Params  `json:"headers,omitempty"`
+}
+
 func main() {
 
-	list := []forward.Forward{
-		{
-			Method: "GET",
-			Path:   "/one",
-			Rewrite: forward.Rewrite{
-				"/one": "/",
-			},
-			Destination: "http://localhost:4444",
-			Headers: forward.Params{
-				"X-Pokerface": "yes",
-			},
-			Query: forward.Params{
-				"Pippo": "pluto",
-			},
-		},
-		{
-			Path:        "/two",
-			Destination: "http://localhost:5555",
-		},
+	if len(os.Args) < 2 {
+		panic("Config path required")
+	}
+
+	var err error
+	configPath := os.Args[1]
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = os.Stat(configPath)
+	if err != nil {
+		panic(err)
+	}
+
+	configContent, err := os.ReadFile(configPath)
+	if err != nil {
+		panic(err)
+	}
+
+	var config Config
+	err = json.Unmarshal(configContent, &config)
+	if err != nil {
+		panic(err)
 	}
 
 	proxy.WithTlsConfig(&tls.Config{
@@ -46,13 +73,13 @@ func main() {
 	})
 
 	app := fiber.New(fiber.Config{
-		Prefork:       true,
 		CaseSensitive: true,
 		StrictRouting: true,
 	})
 
-	for _, f := range list {
+	for _, f := range config.Forwards {
 		handler := getPathHandler(f)
+
 		if f.Method != "" {
 			app.Add(f.Method, f.Path, handler)
 		} else {
@@ -60,10 +87,27 @@ func main() {
 		}
 	}
 
-	app.Listen(":80")
+	// ln, err := net.Listen("tcp", ":80")
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// app.Listener(ln)
+
+	ln, err := net.Listen("tcp", ":443")
+	if err != nil {
+		panic(err)
+	}
+
+	tlsConfig, err := cert.GenerateTlsConfig()
+	if err != nil {
+		panic(err)
+	}
+
+	app.Listener(tls.NewListener(ln, tlsConfig))
 }
 
-func getPathHandler(rew forward.Forward) fiber.Handler {
+func getPathHandler(rew Forward) fiber.Handler {
 	rulesRegex := map[*regexp.Regexp]string{}
 
 	if len(rew.Rewrite) > 0 {
@@ -74,6 +118,8 @@ func getPathHandler(rew forward.Forward) fiber.Handler {
 			rulesRegex[regexp.MustCompile(k)] = v
 		}
 	}
+
+	fmt.Printf("rew: %v\n", rew)
 
 	return func(c *fiber.Ctx) (err error) {
 		path := c.Path()
@@ -99,14 +145,14 @@ func getPathHandler(rew forward.Forward) fiber.Handler {
 		if len(rew.Headers) > 0 {
 			reqHeader := &c.Request().Header
 			for k, v := range rew.Headers {
-				reqHeader.Add(k, v)
+				reqHeader.Add(k, getParamsValue(c, v))
 			}
 		}
 
 		if len(rew.Query) > 0 {
 			query := destUrl.Query()
 			for k, v := range rew.Query {
-				query.Add(k, v)
+				query.Add(k, getParamsValue(c, v))
 			}
 			destUrl.RawQuery = query.Encode()
 		}
@@ -130,4 +176,33 @@ func captureTokens(pattern *regexp.Regexp, input string) *strings.Replacer {
 		replace[j+1] = v
 	}
 	return strings.NewReplacer(replace...)
+}
+
+func getHeadersMap(h *fasthttp.RequestHeader) *map[string]string {
+	headers := map[string]string{}
+	h.VisitAll(func(key, value []byte) {
+		headers[string(key)] = string(value)
+	})
+	return &headers
+}
+
+func getParamsValue(c *fiber.Ctx, value string) string {
+	r := regexp.MustCompile(`\{(headers|cookies|query)\.([^}]+)\}`)
+	matches := r.FindAllStringSubmatch(value, -1)
+	for _, match := range matches {
+		if len(match) > 0 {
+			var newVal string
+			key := match[2]
+			switch match[1] {
+			case "headers":
+				newVal = string(c.Request().Header.Peek(key))
+			case "cookies":
+				newVal = c.Cookies(key)
+			case "query":
+				newVal = c.Query(key)
+			}
+			value = strings.Replace(value, match[0], newVal, 1)
+		}
+	}
+	return value
 }
