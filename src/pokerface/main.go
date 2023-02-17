@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -12,9 +14,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/francoispqt/gojay"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/proxy"
+	diff "github.com/r3labs/diff/v3"
 	"github.com/sandrolain/go-pokerface/src/cert"
+	"github.com/sandrolain/go-pokerface/src/pokerface/shared"
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/valyala/fasthttp"
 )
 
@@ -119,8 +126,6 @@ func getPathHandler(rew Forward) fiber.Handler {
 		}
 	}
 
-	fmt.Printf("rew: %v\n", rew)
-
 	return func(c *fiber.Ctx) (err error) {
 		path := c.Path()
 		if len(rulesRegex) > 0 {
@@ -157,6 +162,11 @@ func getPathHandler(rew Forward) fiber.Handler {
 			destUrl.RawQuery = query.Encode()
 		}
 
+		err = applyWasmFilter(c)
+		if err != nil {
+			return
+		}
+
 		fn := proxy.Forward(destUrl.String())
 		return fn(c)
 	}
@@ -178,14 +188,6 @@ func captureTokens(pattern *regexp.Regexp, input string) *strings.Replacer {
 	return strings.NewReplacer(replace...)
 }
 
-func getHeadersMap(h *fasthttp.RequestHeader) *map[string]string {
-	headers := map[string]string{}
-	h.VisitAll(func(key, value []byte) {
-		headers[string(key)] = string(value)
-	})
-	return &headers
-}
-
 func getParamsValue(c *fiber.Ctx, value string) string {
 	r := regexp.MustCompile(`\{(headers|cookies|query)\.([^}]+)\}`)
 	matches := r.FindAllStringSubmatch(value, -1)
@@ -205,4 +207,169 @@ func getParamsValue(c *fiber.Ctx, value string) string {
 		}
 	}
 	return value
+}
+
+func applyWasmFilter(c *fiber.Ctx) (err error) {
+	r1 := extractRequestInfo(c)
+	r2, err := executeWasm(r1)
+	if err != nil {
+		return
+	}
+	changes, err := diffRequests(r1, r2)
+	if err != nil {
+		return
+	}
+	for _, ch := range *changes {
+		switch ch.Path[0] {
+		case "Method":
+			c.Method(ch.To.(string))
+		case "Path":
+			c.Path(ch.To.(string))
+		case "Headers":
+			if ch.Type == "create" {
+				for _, v := range ch.To.(shared.RequestParamsMultiValues) {
+					c.Request().Header.Add(ch.Path[1], v)
+				}
+			}
+			if ch.Type == "delete" {
+				c.Request().Header.Del(ch.Path[1])
+			}
+		case "Query":
+			if ch.Type == "create" {
+				for _, v := range ch.To.(shared.RequestParamsMultiValues) {
+					c.Context().QueryArgs().Add(ch.Path[1], v)
+				}
+			}
+			if ch.Type == "delete" {
+				c.Context().QueryArgs().Del(ch.Path[1])
+			}
+		case "Cookies":
+			if ch.Type == "create" {
+				c.Request().Header.SetCookie(ch.Path[1], ch.To.(string))
+			}
+			if ch.Type == "delete" {
+				c.Request().Header.DelCookie(ch.Path[1])
+			}
+		}
+	}
+	return
+}
+
+func diffRequests(r1 *shared.RequestInfo, r2 *shared.RequestInfo) (*diff.Changelog, error) {
+	changelog, err := diff.Diff(r1, r2)
+	return &changelog, err
+}
+
+func extractRequestInfo(c *fiber.Ctx) (r *shared.RequestInfo) {
+	r = &shared.RequestInfo{}
+	r.Method = c.Method()
+	r.Path = c.Path()
+	r.Query = make(shared.RequestParamsMulti)
+	r.Headers = make(shared.RequestParamsMulti)
+	r.Cookies = make(shared.RequestParams)
+
+	c.Context().QueryArgs().VisitAll(func(key, value []byte) {
+		k := string(key)
+		v := string(value)
+		_, ok := r.Query[k]
+		if ok {
+			r.Query[k] = append(r.Query[k], v)
+		} else {
+			r.Query[k] = []string{v}
+		}
+	})
+
+	h := &c.Request().Header
+
+	h.VisitAll(func(key, value []byte) {
+		k := string(key)
+		v := string(value)
+		_, ok := r.Headers[k]
+		if ok {
+			r.Headers[k] = append(r.Headers[k], v)
+		} else {
+			r.Headers[k] = []string{v}
+		}
+	})
+
+	h.VisitAllCookie(func(key, value []byte) {
+		r.Cookies[string(key)] = string(value)
+	})
+
+	return
+}
+
+func executeWasm(req *shared.RequestInfo) (res *shared.RequestInfo, err error) {
+	wasmBytes, _ := ioutil.ReadFile("example.wasm")
+
+	ctx := context.Background()
+	// Create a new WebAssembly Runtime.
+	r := wazero.NewRuntime(ctx)
+	defer r.Close(ctx) // This closes everything this Runtime created.
+
+	// Instantiate WASI, which implements host functions needed for TinyGo to
+	// implement `panic`.
+	wasi_snapshot_preview1.MustInstantiate(ctx, r)
+
+	// Instantiate the guest Wasm into the same runtime. It exports the `add`
+	// function, implemented in WebAssembly.
+	mod, err := r.InstantiateModuleFromBinary(ctx, wasmBytes)
+	if err != nil {
+		return
+	}
+
+	alloc := mod.ExportedFunction("alloc")
+	if alloc == nil {
+		err = fmt.Errorf("Invalid alloc type")
+		return
+	}
+
+	filter := mod.ExportedFunction("filter")
+	if filter == nil {
+		err = fmt.Errorf("Invalid filter type")
+		return
+	}
+
+	reqJson, err := gojay.Marshal(req)
+	if err != nil {
+		return
+	}
+
+	reqSize := uint64(len(reqJson))
+
+	allocRes, err := alloc.Call(ctx, reqSize)
+	if err != nil {
+		err = fmt.Errorf("failed to alloc memory: %v", err)
+		return
+	}
+
+	reqPtr := allocRes[0]
+
+	if ok := mod.Memory().Write(uint32(reqPtr), reqJson); !ok {
+		err = fmt.Errorf("failed to write memory")
+		return
+	}
+
+	resPtrSize, err := filter.Call(ctx, reqPtr, reqSize)
+	if err != nil {
+		err = fmt.Errorf("cannot call filter: %v", err)
+		return
+	}
+
+	resPrt := uint32(resPtrSize[0] >> 32)
+	resSize := uint32(resPtrSize[0])
+
+	resJson, ok := mod.Memory().Read(resPrt, resSize)
+	if !ok {
+		err = fmt.Errorf("cannot read memory")
+		return
+	}
+
+	res = &shared.RequestInfo{}
+	err = gojay.Unmarshal(resJson, res)
+	if err != nil {
+		return
+	}
+
+	return
 }

@@ -4,7 +4,11 @@ go 1.20
 
 require (
 	github.com/d5/tengo/v2 v2.13.0
+	github.com/francoispqt/gojay v1.2.13
 	github.com/gofiber/fiber/v2 v2.42.0
+	github.com/r3labs/diff/v3 v3.0.1
+	github.com/tetratelabs/wazero v1.0.0-pre.8
+	github.com/tinylib/msgp v1.1.6
 	github.com/valyala/fasthttp v1.44.0
 )
 
@@ -19,8 +23,10 @@ require (
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/savsgio/dictpool v0.0.0-20221023140959-7bf2e61cea94 // indirect
 	github.com/savsgio/gotils v0.0.0-20220530130905-52f3993e8d6d // indirect
-	github.com/tinylib/msgp v1.1.6 // indirect
+	github.com/stretchr/testify v1.7.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
+	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab // indirect
 )
