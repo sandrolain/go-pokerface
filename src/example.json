@@ -1,26 +1,25 @@
 {
-	"port": 80,
-	"https": false,
-  "forwards": [
-    {
+  "port": 80,
+  "https": false,
+  "forwards": [{
       "method": "GET",
       "path": "/one",
       "rewrite": {
-				"/one": "/"
-			},
-			"destination": "http://localhost:4444",
-			"headers": {
-				"X-Pokerface":   "yes",
-				"Authorization": "{cookies.auth}"
-			},
-			"query": {
-				"Pippo": "pluto"
-			},
-			"wasmFilter": "./example.wasm"
-		},
-		{
-			"path":        "/two",
-			"destination": "http://localhost:5555"
-		}
+        "/one": "/"
+      },
+      "destination": "http://localhost:4444",
+      "headers": {
+        "X-Pokerface": "yes",
+        "Authorization": "{cookies.auth}"
+      },
+      "query": {
+        "Pippo": "pluto"
+      },
+      "wasmFilter": "./example.wasm"
+    },
+    {
+      "path": "/two",
+      "destination": "http://localhost:5555"
+    }
   ]
 }
