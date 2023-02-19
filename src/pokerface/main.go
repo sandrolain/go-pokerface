@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -26,6 +25,8 @@ import (
 )
 
 type Config struct {
+	Port     int       `json:"port"`
+	Https    bool      `json:"https"`
 	Forwards []Forward `json:"forwards"`
 }
 
@@ -39,6 +40,8 @@ type Forward struct {
 	Destination string  `json:"destination"`
 	Query       Params  `json:"query,omitempty"`
 	Headers     Params  `json:"headers,omitempty"`
+	WasmFilter  string  `json:"wasmFilter,omitempty"`
+	WasmData    []byte
 }
 
 func main() {
@@ -85,7 +88,10 @@ func main() {
 	})
 
 	for _, f := range config.Forwards {
-		handler := getPathHandler(f)
+		handler, err := getPathHandler(f)
+		if err != nil {
+			panic(err)
+		}
 
 		if f.Method != "" {
 			app.Add(f.Method, f.Path, handler)
@@ -94,27 +100,34 @@ func main() {
 		}
 	}
 
-	// ln, err := net.Listen("tcp", ":80")
-	// if err != nil {
-	// 	panic(err)
-	// }
+	addr := fmt.Sprintf(":%v", config.Port)
 
-	// app.Listener(ln)
-
-	ln, err := net.Listen("tcp", ":443")
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		panic(err)
 	}
 
-	tlsConfig, err := cert.GenerateTlsConfig()
-	if err != nil {
-		panic(err)
+	if config.Https {
+		tlsConfig, err := cert.GenerateTlsConfig()
+		if err != nil {
+			panic(err)
+		}
+
+		ln = tls.NewListener(ln, tlsConfig)
 	}
 
-	app.Listener(tls.NewListener(ln, tlsConfig))
+	app.Listener(ln)
 }
 
-func getPathHandler(rew Forward) fiber.Handler {
+func getPathHandler(rew Forward) (fiber.Handler, error) {
+	if rew.WasmFilter != "" {
+		wasmBytes, err := ioutil.ReadFile(rew.WasmFilter)
+		if err != nil {
+			return nil, err
+		}
+		rew.WasmData = wasmBytes
+	}
+
 	rulesRegex := map[*regexp.Regexp]string{}
 
 	if len(rew.Rewrite) > 0 {
@@ -162,14 +175,16 @@ func getPathHandler(rew Forward) fiber.Handler {
 			destUrl.RawQuery = query.Encode()
 		}
 
-		err = applyWasmFilter(c)
-		if err != nil {
-			return
+		if len(rew.WasmData) > 0 {
+			err = applyWasmFilter(&rew, c)
+			if err != nil {
+				return
+			}
 		}
 
 		fn := proxy.Forward(destUrl.String())
 		return fn(c)
-	}
+	}, nil
 }
 
 // https://github.com/labstack/echo/blob/master/middleware/rewrite.go
@@ -209,9 +224,9 @@ func getParamsValue(c *fiber.Ctx, value string) string {
 	return value
 }
 
-func applyWasmFilter(c *fiber.Ctx) (err error) {
+func applyWasmFilter(rew *Forward, c *fiber.Ctx) (err error) {
 	r1 := extractRequestInfo(c)
-	r2, err := executeWasm(r1)
+	r2, err := executeWasm(r1, rew, c)
 	if err != nil {
 		return
 	}
@@ -299,10 +314,8 @@ func extractRequestInfo(c *fiber.Ctx) (r *shared.RequestInfo) {
 	return
 }
 
-func executeWasm(req *shared.RequestInfo) (res *shared.RequestInfo, err error) {
-	wasmBytes, _ := ioutil.ReadFile("example.wasm")
-
-	ctx := context.Background()
+func executeWasm(req *shared.RequestInfo, f *Forward, c *fiber.Ctx) (res *shared.RequestInfo, err error) {
+	ctx := c.Context()
 	// Create a new WebAssembly Runtime.
 	r := wazero.NewRuntime(ctx)
 	defer r.Close(ctx) // This closes everything this Runtime created.
@@ -313,7 +326,7 @@ func executeWasm(req *shared.RequestInfo) (res *shared.RequestInfo, err error) {
 
 	// Instantiate the guest Wasm into the same runtime. It exports the `add`
 	// function, implemented in WebAssembly.
-	mod, err := r.InstantiateModuleFromBinary(ctx, wasmBytes)
+	mod, err := r.InstantiateModuleFromBinary(ctx, f.WasmData)
 	if err != nil {
 		return
 	}

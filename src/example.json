@@ -1,4 +1,6 @@
 {
+	"port": 80,
+	"https": false,
   "forwards": [
     {
       "method": "GET",
@@ -13,7 +15,8 @@
 			},
 			"query": {
 				"Pippo": "pluto"
-			}
+			},
+			"wasmFilter": "./example.wasm"
 		},
 		{
 			"path":        "/two",

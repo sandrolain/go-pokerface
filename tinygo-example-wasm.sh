@@ -2,4 +2,4 @@
 
 cd ./src
 
-tinygo build -o ./example.wasm -target=wasi ./example-wasm
+tinygo build -o ./example.wasm -no-debug -gc=leaking -scheduler=none -target=wasi ./example-wasm

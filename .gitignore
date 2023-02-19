@@ -17,3 +17,4 @@ src/vendor/
 example.wasm
 node_modules/
 build/
+.DS_Store
