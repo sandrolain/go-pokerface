@@ -16,7 +16,7 @@ import (
 	"github.com/francoispqt/gojay"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/proxy"
-	diff "github.com/r3labs/diff/v3"
+	"github.com/r3labs/diff/v3"
 	"github.com/sandrolain/go-pokerface/src/cert"
 	"github.com/sandrolain/go-pokerface/src/pokerface/shared"
 	"github.com/tetratelabs/wazero"
@@ -326,7 +326,7 @@ func executeWasm(req *shared.RequestInfo, f *Forward, c *fiber.Ctx) (res *shared
 
 	// Instantiate the guest Wasm into the same runtime. It exports the `add`
 	// function, implemented in WebAssembly.
-	mod, err := r.InstantiateModuleFromBinary(ctx, f.WasmData)
+	mod, err := r.Instantiate(ctx, f.WasmData)
 	if err != nil {
 		return
 	}
