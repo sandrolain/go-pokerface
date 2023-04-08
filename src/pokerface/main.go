@@ -15,6 +15,7 @@ import (
 
 	"github.com/francoispqt/gojay"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/proxy"
 	"github.com/r3labs/diff/v3"
 	"github.com/sandrolain/go-pokerface/src/cert"
@@ -86,6 +87,10 @@ func main() {
 		CaseSensitive: true,
 		StrictRouting: true,
 	})
+
+	app.Use(logger.New(logger.Config{
+		Format: "[${ip}]:${port} ${status} - ${method} ${path}\n",
+	}))
 
 	for _, f := range config.Forwards {
 		handler, err := getPathHandler(f)
